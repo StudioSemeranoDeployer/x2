@@ -1,15 +1,17 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Player, SimulationStats, ChartDataPoint, SimulationStatus, DistributionStrategy } from './types';
 import { QueueVisualizer } from './components/QueueVisualizer';
 import { StatsChart } from './components/StatsChart';
 import { SmartContractViewer } from './components/SmartContractViewer';
 import { analyzeRisk } from './services/geminiService';
-import { Play, Pause, RefreshCw, AlertTriangle, ChevronRight, BarChart3, Bot, TrendingUp, Moon, FileCode, Dna, Settings, Users, ShieldCheck, Wallet, Skull, Flame, TrendingDown, Timer } from 'lucide-react';
+import { Play, Pause, RefreshCw, AlertTriangle, ChevronRight, BarChart3, Bot, TrendingUp, Moon, FileCode, Dna, Settings, Users, ShieldCheck, Wallet, Skull, Flame, TrendingDown, Timer, Droplets } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
-const INITIAL_RESERVE = 1000;
+const INITIAL_SEED_AMOUNT = 1000;
 const FEE_PERCENT = 0.01; // 1%
 const GUILLOTINE_INTERVAL = 60; // Ticks representing ~6 hours
+const HOURLY_DRIP_INTERVAL = 10; // Ticks representing ~1 hour for drip
 
 // Internal Engine State Interface (Mutable)
 interface EngineState {
@@ -57,7 +59,7 @@ const App: React.FC = () => {
       currentRound: 1,
       strategy: DistributionStrategy.STANDARD,
       multiplier: 2.0,
-      protocolBalance: INITIAL_RESERVE,
+      protocolBalance: 0,
       guillotineEnabled: false,
       dynamicDecayEnabled: false,
       winnersTaxEnabled: false
@@ -68,11 +70,20 @@ const App: React.FC = () => {
 
   // --- Engine (Mutable Ref - No Re-renders) ---
   const engine = useRef<EngineState>({
-    queue: [],
+    queue: [{
+      id: 'PROTOCOL_SEED',
+      deposit: INITIAL_SEED_AMOUNT,
+      target: INITIAL_SEED_AMOUNT * 2.0,
+      collected: 0,
+      entryRound: 1,
+      timestamp: Date.now(),
+      slashed: false,
+      multiplier: 2.0
+    }],
     historyCount: 0,
     historySum: 0,
-    totalDeposited: 0,
-    protocolBalance: INITIAL_RESERVE,
+    totalDeposited: INITIAL_SEED_AMOUNT,
+    protocolBalance: 0, // Starts at 0 because 1000 is used for seed
     currentRound: 1,
     chartData: [],
     tickCount: 0
@@ -81,17 +92,15 @@ const App: React.FC = () => {
   // Logic: The Guillotine
   const triggerGuillotine = () => {
     const state = engine.current;
-    if (state.queue.length < 5) return; // Need some crowd
+    if (state.queue.length < 5) return; 
 
-    // 1. Find the biggest liabilities (Remaining Target)
     const candidates = [...state.queue]
       .filter(p => !p.slashed) 
       .sort((a, b) => (b.target - b.collected) - (a.target - a.collected))
-      .slice(0, 30); // Top 30 Whales
+      .slice(0, 30); 
 
     if (candidates.length === 0) return;
 
-    // 2. Pick 10 Random victims
     const victims: Player[] = [];
     const pool = [...candidates];
     
@@ -102,12 +111,36 @@ const App: React.FC = () => {
        pool.splice(randIndex, 1);
     }
 
-    // 3. Slash them by 20%
     victims.forEach(v => {
       const originalTarget = v.target;
-      v.target = originalTarget * 0.80; // 20% haircut
+      v.target = originalTarget * 0.80; 
       v.slashed = true;
     });
+  };
+
+  // Logic: Hourly Drip (50% of Vault)
+  const triggerHourlyDrip = () => {
+    const state = engine.current;
+    if (state.protocolBalance <= 1 || state.queue.length === 0) return;
+
+    const dripAmount = state.protocolBalance * 0.50; // 50%
+    state.protocolBalance -= dripAmount;
+
+    // Distribute dripAmount to Head (FIFO)
+    let remaining = dripAmount;
+    for (const p of state.queue) {
+      if (remaining <= 0) break;
+      const needed = p.target - p.collected;
+      if (needed <= 0) continue; 
+
+      if (remaining >= needed) {
+        p.collected += needed; 
+        remaining -= needed;
+      } else {
+        p.collected += remaining;
+        remaining = 0;
+      }
+    }
   };
 
   // Helper: Process a single deposit logic
@@ -115,16 +148,19 @@ const App: React.FC = () => {
     const state = engine.current;
     state.tickCount++;
 
-    // GUILLOTINE CHECK
+    // TIMED EVENTS
     if (guillotineEnabled && state.tickCount % GUILLOTINE_INTERVAL === 0) {
       triggerGuillotine();
+    }
+    if (state.tickCount % HOURLY_DRIP_INTERVAL === 0) {
+      triggerHourlyDrip();
     }
     
     // 1. Take Fee (if not system)
     let netAmount = amount;
     if (!isSystem) {
       const fee = amount * FEE_PERCENT;
-      const actualFee = Math.max(1, fee); // Min $1 fee
+      const actualFee = Math.max(1, fee); 
       netAmount = amount - actualFee;
       state.protocolBalance += actualFee;
     }
@@ -136,8 +172,8 @@ const App: React.FC = () => {
     let yieldPool = 0;
 
     if (strategy === DistributionStrategy.COMMUNITY_YIELD) {
-      yieldPool = netAmount * 0.20; // 20%
-      headPool = netAmount * 0.80;  // 80%
+      yieldPool = netAmount * 0.20; 
+      headPool = netAmount * 0.80;  
     }
 
     // 3. Dynamic Decay Calculation
@@ -145,7 +181,12 @@ const App: React.FC = () => {
     if (dynamicDecayEnabled && !isSystem) {
       // Decay: Lose 0.05x for every 10 people in queue
       const decayFactor = Math.floor(state.queue.length / 10) * 0.05;
-      effectiveMultiplier = Math.max(1.1, multiplier - decayFactor);
+      
+      // CAP: Max reduction is 20% of base multiplier
+      const maxReduction = multiplier * 0.20;
+      const actualReduction = Math.min(decayFactor, maxReduction);
+      
+      effectiveMultiplier = multiplier - actualReduction;
     }
 
     // 4. Create Player
@@ -156,7 +197,8 @@ const App: React.FC = () => {
       collected: 0,
       entryRound: state.currentRound,
       timestamp: Date.now(),
-      slashed: false
+      slashed: false,
+      multiplier: effectiveMultiplier
     };
 
     // 5. Distribute Yield (Drip)
@@ -193,14 +235,11 @@ const App: React.FC = () => {
         p.collected = p.target; // Visual clean
         
         // WINNERS TAX LOGIC
-        // If enabled and exit time is "fast" (simulated as < 10 seconds since entry)
         if (winnersTaxEnabled && !isSystem && (Date.now() - p.timestamp < 10000)) {
            const profit = p.collected - p.deposit;
            if (profit > 0) {
-             const tax = profit * 0.20; // 20% of profit
+             const tax = profit * 0.20; 
              state.protocolBalance += tax;
-             // Note: We don't reduce 'collected' on the player object to keep history accurate of what was "generated",
-             // but effectively the protocol absorbed that value. 
            }
         }
 
@@ -226,8 +265,8 @@ const App: React.FC = () => {
   const handleMidnightReset = () => {
     const state = engine.current;
     
-    // 1. REFUND PHASE
-    let surplus = Math.max(0, state.protocolBalance - INITIAL_RESERVE);
+    // 1. REFUND PHASE (Use whatever is in vault)
+    let surplus = state.protocolBalance;
     if (surplus > 0) {
       for (const p of state.queue) {
         if (surplus <= 0) break;
@@ -238,7 +277,7 @@ const App: React.FC = () => {
            surplus -= pay;
         }
       }
-      state.protocolBalance = INITIAL_RESERVE + surplus; 
+      state.protocolBalance = 0; // Vault is drained for refunds
     }
 
     // 2. WIPE
@@ -247,21 +286,27 @@ const App: React.FC = () => {
     // 3. RESTART
     state.currentRound++;
     
-    // 4. PROTOCOL SEED
-    if (state.protocolBalance >= 100) {
-       state.protocolBalance -= 100;
-       processDeposit(100, true);
-    }
+    // 4. PROTOCOL SEED for next day (Small seed)
+    processDeposit(100, true);
   };
 
   const handleFullReset = () => {
     setStatus(SimulationStatus.IDLE);
     engine.current = {
-      queue: [],
+      queue: [{
+        id: 'PROTOCOL_SEED',
+        deposit: INITIAL_SEED_AMOUNT,
+        target: INITIAL_SEED_AMOUNT * 2.0, // Should use current multiplier but sticking to safe default
+        collected: 0,
+        entryRound: 1,
+        timestamp: Date.now(),
+        slashed: false,
+        multiplier: 2.0
+      }],
       historyCount: 0,
       historySum: 0,
-      totalDeposited: 0,
-      protocolBalance: INITIAL_RESERVE,
+      totalDeposited: INITIAL_SEED_AMOUNT,
+      protocolBalance: 0,
       currentRound: 1,
       chartData: [],
       tickCount: 0
@@ -328,9 +373,10 @@ const App: React.FC = () => {
       Strategy: ${strategy}.
       Options: 
       - Guillotine: ${guillotineEnabled}
-      - Dynamic Decay: ${dynamicDecayEnabled} (Lowers ROI for late entrants)
+      - Dynamic Decay: ${dynamicDecayEnabled} (Max reduction 20% of base)
       - Winners Tax: ${winnersTaxEnabled} (20% fee on fast profits > Vault)
       Reserve: ${uiSnapshot.stats.protocolBalance.toFixed(2)} available.
+      Hourly Drip: 50% of vault distributed.
       Midnight Reset: Active.
     `;
     const result = await analyzeRisk(uiSnapshot.stats, concept);
@@ -359,7 +405,7 @@ const App: React.FC = () => {
                 x2gether <span className="text-emerald-500">Protocol</span>
               </h1>
               <div className="flex items-center gap-2 text-sm text-slate-400 mt-1">
-                <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">v3.0-RC</span>
+                <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">v3.5-Beta</span>
                 <span>•</span>
                 <span>Algorithmic Simulation</span>
               </div>
@@ -405,10 +451,10 @@ const App: React.FC = () => {
                    <div className="text-4xl font-mono font-bold text-white mb-1">
                      ${stats.protocolBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                    </div>
-                   <div className="text-xs text-slate-500 mb-6 flex justify-between">
-                      <span>Reserve Floor: $1,000.00</span>
+                   <div className="text-xs text-slate-500 mb-6 flex justify-between items-center">
+                      <span className="flex items-center gap-1"><Droplets className="w-3 h-3 text-blue-400"/> 50% Hourly Drip</span>
                       <span className="text-emerald-400">
-                         {stats.protocolBalance > 1000 ? `+$${(stats.protocolBalance - 1000).toFixed(2)} Surplus` : 'Base Level'}
+                         Active
                       </span>
                    </div>
 
@@ -522,7 +568,7 @@ const App: React.FC = () => {
                            <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform`} style={{left: dynamicDecayEnabled ? '18px' : '2px'}}></div>
                          </button>
                       </div>
-                      <p className="text-[9px] text-slate-500">Multiplier drops as queue grows.</p>
+                      <p className="text-[9px] text-slate-500">Drops multiplier up to 20%.</p>
                     </div>
 
                     {/* Winners Tax Toggle */}

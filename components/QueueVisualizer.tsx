@@ -1,6 +1,7 @@
+
 import React from 'react';
 import { Player } from '../types';
-import { User, Lock, Wallet, Skull } from 'lucide-react';
+import { User, Lock, Wallet, Skull, TrendingDown } from 'lucide-react';
 
 interface QueueVisualizerProps {
   queue: Player[];
@@ -60,6 +61,11 @@ export const QueueVisualizer: React.FC<QueueVisualizerProps> = ({ queue, maxDisp
                   </div>
                   <div className="text-sm font-semibold text-slate-200 flex items-center gap-1">
                     <Wallet className="w-3 h-3 text-slate-500" /> ${player.deposit}
+                    {player.multiplier && (
+                       <span className="ml-1 text-[10px] bg-slate-800 text-slate-400 px-1 rounded border border-slate-700 flex items-center">
+                         {player.multiplier.toFixed(2)}x
+                       </span>
+                    )}
                   </div>
                 </div>
               </div>

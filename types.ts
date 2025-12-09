@@ -1,3 +1,4 @@
+
 export interface Player {
   id: string;
   deposit: number;
@@ -6,6 +7,7 @@ export interface Player {
   entryRound: number;
   timestamp: number;
   slashed?: boolean; // True if hit by Guillotine
+  multiplier: number; // The specific multiplier at entry
 }
 
 export enum DistributionStrategy {

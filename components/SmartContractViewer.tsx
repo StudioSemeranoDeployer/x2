@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Copy, Check, FileText } from 'lucide-react';
 
@@ -18,40 +19,45 @@ contract X2GetherProtocol is Ownable {
         uint256 collected;  
         uint256 target;     
         uint256 timestamp;
+        uint256 multiplier;
         bool slashed;
     }
 
     IERC20 public usdcToken;
     Player[] public queue;
+    uint256 public protocolVault;
     
     // Config
-    uint256 public constant RESERVE_FLOOR = 1000 * 10**6; 
+    uint256 public constant BASE_MULTIPLIER = 200; // 2.0x
     bool public dynamicDecayEnabled;
     bool public winnersTaxEnabled;
     
+    // Timers
+    uint256 public lastHourlyDrip;
+
     event Deposit(address indexed user, uint256 amount, uint256 target);
-    event Exit(address indexed user, uint256 profit, uint256 taxPaid);
+    event HourlyDrip(uint256 amount);
 
     constructor(address _usdcAddress) Ownable(msg.sender) {
         usdcToken = IERC20(_usdcAddress);
-    }
-
-    function toggleStrategies(bool _decay, bool _tax) external onlyOwner {
-        dynamicDecayEnabled = _decay;
-        winnersTaxEnabled = _tax;
+        // Initial Seed logic handled in deploy script
     }
 
     function deposit(uint256 amount) external {
-        // ... Transfer and Fee logic ...
+        // ... Transfer and Fee logic (1%) ...
         
-        uint256 mult = 200; // 2.0x base
+        uint256 mult = BASE_MULTIPLIER;
         
-        // 1. Dynamic Decay Logic
+        // 1. Dynamic Decay Logic (Max 20% Reduction)
         if (dynamicDecayEnabled) {
             uint256 queueLen = queue.length - headIndex;
             uint256 reduction = (queueLen / 10) * 5; // -0.05 per 10 users
-            if (reduction < 90) mult -= reduction; 
-            else mult = 110; // Min 1.1x
+            
+            // Cap reduction at 20% of base (e.g., 40 points if base is 200)
+            uint256 maxRed = (BASE_MULTIPLIER * 20) / 100; 
+            if (reduction > maxRed) reduction = maxRed;
+            
+            mult -= reduction;
         }
 
         uint256 target = (amount * mult) / 100;
@@ -62,24 +68,26 @@ contract X2GetherProtocol is Ownable {
             collected: 0,
             target: target,
             timestamp: block.timestamp,
+            multiplier: mult,
             slashed: false
         }));
+        
+        // Check for Drip
+        if (block.timestamp > lastHourlyDrip + 1 hours) {
+            _triggerHourlyDrip();
+        }
     }
 
-    function _processExit(uint256 index) internal {
-        Player storage p = queue[index];
+    function _triggerHourlyDrip() internal {
+        if (protocolVault == 0) return;
         
-        // 2. Winners Tax Logic (Fast Exit < 1 hour)
-        if (winnersTaxEnabled && block.timestamp - p.timestamp < 1 hours) {
-            uint256 profit = p.collected - p.deposit;
-            if (profit > 0) {
-                uint256 tax = (profit * 20) / 100;
-                // Move tax to reserve logic...
-                emit Exit(p.wallet, profit - tax, tax);
-                return;
-            }
-        }
-        emit Exit(p.wallet, p.collected - p.deposit, 0);
+        // Use 50% of vault
+        uint256 drip = protocolVault / 2;
+        protocolVault -= drip;
+        
+        // Distribute drip to queue (logic omitted for brevity)
+        lastHourlyDrip = block.timestamp;
+        emit HourlyDrip(drip);
     }
 }`;
 
@@ -98,7 +106,7 @@ contract X2GetherProtocol is Ownable {
           </div>
           <div>
             <h2 className="text-sm font-bold text-white uppercase tracking-wide">Solidity Contract</h2>
-            <span className="text-xs text-slate-400">Base Mainnet • v3.0 (Strategies)</span>
+            <span className="text-xs text-slate-400">Base Mainnet • v3.5 (Hourly Drip)</span>
           </div>
         </div>
         <button 
