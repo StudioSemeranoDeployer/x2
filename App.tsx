@@ -1,15 +1,14 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Player, SimulationStats, ChartDataPoint, SimulationStatus, DistributionStrategy } from './types';
+import { Player, SimulationStats, ChartDataPoint, SimulationStatus, DistributionStrategy, SimulationConfig } from './types';
 import { QueueVisualizer } from './components/QueueVisualizer';
 import { StatsChart } from './components/StatsChart';
 import { SmartContractViewer } from './components/SmartContractViewer';
 import { analyzeRisk } from './services/geminiService';
-import { Play, Pause, RefreshCw, AlertTriangle, ChevronRight, BarChart3, Bot, TrendingUp, Moon, FileCode, Dna, Settings, Users, ShieldCheck, Wallet, Skull, Flame, TrendingDown, Timer, Droplets } from 'lucide-react';
+import { Play, Pause, RefreshCw, AlertTriangle, ChevronRight, BarChart3, Bot, TrendingUp, Moon, FileCode, Dna, Settings, Users, ShieldCheck, Wallet, Skull, Flame, TrendingDown, Timer, Droplets, Sliders } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
 const INITIAL_SEED_AMOUNT = 1000;
-const FEE_PERCENT = 0.01; // 1%
 const GUILLOTINE_INTERVAL = 60; // Ticks representing ~6 hours
 const HOURLY_DRIP_INTERVAL = 10; // Ticks representing ~1 hour for drip
 
@@ -23,6 +22,7 @@ interface EngineState {
   currentRound: number;
   chartData: ChartDataPoint[];
   tickCount: number; // For timers
+  config: SimulationConfig; // Live config syncing
 }
 
 const App: React.FC = () => {
@@ -35,6 +35,14 @@ const App: React.FC = () => {
   const [guillotineEnabled, setGuillotineEnabled] = useState<boolean>(false);
   const [dynamicDecayEnabled, setDynamicDecayEnabled] = useState<boolean>(false);
   const [winnersTaxEnabled, setWinnersTaxEnabled] = useState<boolean>(false);
+
+  // Advanced Customizable Parameters
+  const [config, setConfig] = useState<SimulationConfig>({
+    feePercent: 0.01,         // 1%
+    guillotineStrength: 0.20, // 20% slash
+    winnersTaxRate: 0.20,     // 20% tax
+    hourlyDripRate: 0.50      // 50% drip
+  });
 
   const [status, setStatus] = useState<SimulationStatus>(SimulationStatus.IDLE);
   const [analysis, setAnalysis] = useState<string>('');
@@ -62,7 +70,13 @@ const App: React.FC = () => {
       protocolBalance: 0,
       guillotineEnabled: false,
       dynamicDecayEnabled: false,
-      winnersTaxEnabled: false
+      winnersTaxEnabled: false,
+      config: {
+        feePercent: 0.01,
+        guillotineStrength: 0.20,
+        winnersTaxRate: 0.20,
+        hourlyDripRate: 0.50
+      }
     },
     chartData: [],
     headPlayer: null
@@ -86,8 +100,19 @@ const App: React.FC = () => {
     protocolBalance: 0, // Starts at 0 because 1000 is used for seed
     currentRound: 1,
     chartData: [],
-    tickCount: 0
+    tickCount: 0,
+    config: {
+      feePercent: 0.01,
+      guillotineStrength: 0.20,
+      winnersTaxRate: 0.20,
+      hourlyDripRate: 0.50
+    }
   });
+
+  // Sync config changes to engine immediately
+  useEffect(() => {
+    engine.current.config = config;
+  }, [config]);
 
   // Logic: The Guillotine
   const triggerGuillotine = () => {
@@ -113,17 +138,19 @@ const App: React.FC = () => {
 
     victims.forEach(v => {
       const originalTarget = v.target;
-      v.target = originalTarget * 0.80; 
+      // Use configured strength
+      v.target = originalTarget * (1 - state.config.guillotineStrength); 
       v.slashed = true;
     });
   };
 
-  // Logic: Hourly Drip (50% of Vault)
+  // Logic: Hourly Drip
   const triggerHourlyDrip = () => {
     const state = engine.current;
     if (state.protocolBalance <= 1 || state.queue.length === 0) return;
 
-    const dripAmount = state.protocolBalance * 0.50; // 50%
+    // Use configured drip rate
+    const dripAmount = state.protocolBalance * state.config.hourlyDripRate;
     state.protocolBalance -= dripAmount;
 
     // Distribute dripAmount to Head (FIFO)
@@ -159,7 +186,7 @@ const App: React.FC = () => {
     // 1. Take Fee (if not system)
     let netAmount = amount;
     if (!isSystem) {
-      const fee = amount * FEE_PERCENT;
+      const fee = amount * state.config.feePercent;
       const actualFee = Math.max(1, fee); 
       netAmount = amount - actualFee;
       state.protocolBalance += actualFee;
@@ -238,7 +265,8 @@ const App: React.FC = () => {
         if (winnersTaxEnabled && !isSystem && (Date.now() - p.timestamp < 10000)) {
            const profit = p.collected - p.deposit;
            if (profit > 0) {
-             const tax = profit * 0.20; 
+             // Use configured tax rate
+             const tax = profit * state.config.winnersTaxRate; 
              state.protocolBalance += tax;
            }
         }
@@ -309,7 +337,8 @@ const App: React.FC = () => {
       protocolBalance: 0,
       currentRound: 1,
       chartData: [],
-      tickCount: 0
+      tickCount: 0,
+      config: config
     };
     syncUI();
   };
@@ -333,12 +362,13 @@ const App: React.FC = () => {
         protocolBalance: state.protocolBalance,
         guillotineEnabled,
         dynamicDecayEnabled,
-        winnersTaxEnabled
+        winnersTaxEnabled,
+        config: state.config
       },
       chartData: [...state.chartData], 
       headPlayer: state.queue[0] || null
     });
-  }, [strategy, multiplier, guillotineEnabled, dynamicDecayEnabled, winnersTaxEnabled]);
+  }, [strategy, multiplier, guillotineEnabled, dynamicDecayEnabled, winnersTaxEnabled, config]);
 
   // --- Timers ---
   useEffect(() => {
@@ -372,11 +402,11 @@ const App: React.FC = () => {
       Protocol with ${multiplier}x Base Multiplier.
       Strategy: ${strategy}.
       Options: 
-      - Guillotine: ${guillotineEnabled}
-      - Dynamic Decay: ${dynamicDecayEnabled} (Max reduction 20% of base)
-      - Winners Tax: ${winnersTaxEnabled} (20% fee on fast profits > Vault)
+      - Guillotine: ${guillotineEnabled} (Slash ${config.guillotineStrength * 100}%)
+      - Winners Tax: ${winnersTaxEnabled} (Tax ${config.winnersTaxRate * 100}%)
+      - Entry Fee: ${config.feePercent * 100}%
+      - Hourly Drip Rate: ${config.hourlyDripRate * 100}%
       Reserve: ${uiSnapshot.stats.protocolBalance.toFixed(2)} available.
-      Hourly Drip: 50% of vault distributed.
       Midnight Reset: Active.
     `;
     const result = await analyzeRisk(uiSnapshot.stats, concept);
@@ -405,7 +435,7 @@ const App: React.FC = () => {
                 x2gether <span className="text-emerald-500">Protocol</span>
               </h1>
               <div className="flex items-center gap-2 text-sm text-slate-400 mt-1">
-                <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">v3.5-Beta</span>
+                <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">v3.7-Custom</span>
                 <span>•</span>
                 <span>Algorithmic Simulation</span>
               </div>
@@ -452,7 +482,7 @@ const App: React.FC = () => {
                      ${stats.protocolBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                    </div>
                    <div className="text-xs text-slate-500 mb-6 flex justify-between items-center">
-                      <span className="flex items-center gap-1"><Droplets className="w-3 h-3 text-blue-400"/> 50% Hourly Drip</span>
+                      <span className="flex items-center gap-1"><Droplets className="w-3 h-3 text-blue-400"/> {(config.hourlyDripRate * 100).toFixed(0)}% Hourly Drip</span>
                       <span className="text-emerald-400">
                          Active
                       </span>
@@ -478,7 +508,7 @@ const App: React.FC = () => {
                 </h2>
                 
                 <div className="space-y-4">
-                  {/* Multiplier */}
+                  {/* Base Multiplier */}
                   <div>
                     <div className="flex justify-between text-xs text-slate-400 mb-2">
                       <span>Base Multiplier</span>
@@ -498,9 +528,77 @@ const App: React.FC = () => {
                     />
                   </div>
 
-                  {/* Strategy */}
-                  <div className="space-y-2">
-                    <span className="text-xs text-slate-400">Distribution Strategy</span>
+                  {/* Advanced Sliders Section */}
+                  <div className="space-y-4 pt-2 border-t border-slate-800">
+                     <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase">
+                        <Sliders className="w-3 h-3" /> Tuning
+                     </div>
+
+                     {/* Fee Percent */}
+                     <div>
+                       <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                         <span>Entry Fee</span>
+                         <span className="text-slate-300 font-mono">{(config.feePercent * 100).toFixed(1)}%</span>
+                       </div>
+                       <input 
+                         type="range" min="0" max="10" step="0.5"
+                         value={config.feePercent * 100}
+                         onChange={(e) => setConfig({...config, feePercent: parseFloat(e.target.value) / 100})}
+                         className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-slate-500"
+                       />
+                     </div>
+
+                     {/* Hourly Drip */}
+                     <div>
+                       <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                         <span>Hourly Drip Rate</span>
+                         <span className="text-blue-400 font-mono">{(config.hourlyDripRate * 100).toFixed(0)}%</span>
+                       </div>
+                       <input 
+                         type="range" min="1" max="100" step="1"
+                         value={config.hourlyDripRate * 100}
+                         onChange={(e) => setConfig({...config, hourlyDripRate: parseFloat(e.target.value) / 100})}
+                         className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                       />
+                     </div>
+
+                     {/* Guillotine Strength */}
+                     {guillotineEnabled && (
+                       <div>
+                         <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                           <span>Slash Strength</span>
+                           <span className="text-red-400 font-mono">{(config.guillotineStrength * 100).toFixed(0)}%</span>
+                         </div>
+                         <input 
+                           type="range" min="5" max="50" step="5"
+                           value={config.guillotineStrength * 100}
+                           onChange={(e) => setConfig({...config, guillotineStrength: parseFloat(e.target.value) / 100})}
+                           className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-red-500"
+                         />
+                       </div>
+                     )}
+
+                     {/* Tax Strength */}
+                     {winnersTaxEnabled && (
+                       <div>
+                         <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                           <span>Tax Rate</span>
+                           <span className="text-blue-400 font-mono">{(config.winnersTaxRate * 100).toFixed(0)}%</span>
+                         </div>
+                         <input 
+                           type="range" min="5" max="50" step="5"
+                           value={config.winnersTaxRate * 100}
+                           onChange={(e) => setConfig({...config, winnersTaxRate: parseFloat(e.target.value) / 100})}
+                           className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                         />
+                       </div>
+                     )}
+                  </div>
+
+                  <hr className="border-slate-800" />
+
+                  {/* Strategy & Toggles */}
+                  <div className="space-y-3">
                     <div className="grid grid-cols-2 gap-2">
                       <button 
                         onClick={() => { setStrategy(DistributionStrategy.STANDARD); handleFullReset(); }}
@@ -511,7 +609,6 @@ const App: React.FC = () => {
                         }`}
                       >
                         <span className="relative z-10 font-bold block">FIFO Standard</span>
-                        <span className="relative z-10 text-[10px] opacity-80">100% to Head</span>
                       </button>
                       <button 
                         onClick={() => { setStrategy(DistributionStrategy.COMMUNITY_YIELD); handleFullReset(); }}
@@ -522,15 +619,9 @@ const App: React.FC = () => {
                         }`}
                       >
                         <span className="relative z-10 font-bold block">Community Yield</span>
-                        <span className="relative z-10 text-[10px] opacity-80">20% shared yield</span>
                       </button>
                     </div>
-                  </div>
 
-                  <hr className="border-slate-800" />
-
-                  {/* MECHANICS TOGGLES */}
-                  <div className="space-y-3">
                     {/* Guillotine Toggle */}
                     <div className={`p-3 rounded-xl border transition-all ${
                        guillotineEnabled 
@@ -548,7 +639,6 @@ const App: React.FC = () => {
                            <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform ${guillotineEnabled ? 'left-4.5' : 'left-0.5'}`} style={{left: guillotineEnabled ? '18px' : '2px'}}></div>
                          </button>
                       </div>
-                      <p className="text-[9px] text-slate-500">Slashes 20% off whales periodically.</p>
                     </div>
 
                     {/* Dynamic Decay Toggle */}
@@ -568,7 +658,6 @@ const App: React.FC = () => {
                            <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform`} style={{left: dynamicDecayEnabled ? '18px' : '2px'}}></div>
                          </button>
                       </div>
-                      <p className="text-[9px] text-slate-500">Drops multiplier up to 20%.</p>
                     </div>
 
                     {/* Winners Tax Toggle */}
@@ -588,7 +677,6 @@ const App: React.FC = () => {
                            <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform`} style={{left: winnersTaxEnabled ? '18px' : '2px'}}></div>
                          </button>
                       </div>
-                      <p className="text-[9px] text-slate-500">20% profit tax on 1h fast-exits.</p>
                     </div>
                   </div>
 

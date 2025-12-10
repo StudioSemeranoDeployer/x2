@@ -15,6 +15,13 @@ export enum DistributionStrategy {
   COMMUNITY_YIELD = 'COMMUNITY_YIELD', // 80% to Head, 20% split among all in queue
 }
 
+export interface SimulationConfig {
+  feePercent: number;        // Entry Fee (0-0.10)
+  guillotineStrength: number; // How much to slash (0.05-0.50)
+  winnersTaxRate: number;    // Tax on fast exits (0.05-0.50)
+  hourlyDripRate: number;    // % of Vault to drip (0.01-1.0)
+}
+
 export interface SimulationStats {
   totalDeposited: number;
   totalPaidOut: number;
@@ -29,6 +36,7 @@ export interface SimulationStats {
   guillotineEnabled: boolean;
   dynamicDecayEnabled: boolean;
   winnersTaxEnabled: boolean;
+  config: SimulationConfig; // Added customizable config
 }
 
 export interface ChartDataPoint {
